@@ -12,7 +12,7 @@ const app = express();
 const allowedOrigins = [
   "http://localhost:3000",
   "https://your-frontend.onrender.com",
-  "https://yourfrontend.vercel.app",
+  "https://student-revision-app.onrender.com",
 ];
 
 // CORS configuration
