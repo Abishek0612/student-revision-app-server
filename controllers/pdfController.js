@@ -45,14 +45,21 @@ const deletePdf = async (req, res) => {
       return res.status(401).json({ message: "Not authorized" });
     }
 
-    await cloudinary.uploader.destroy(pdf.cloudinaryId, {
-      resource_type: "raw",
-    });
+    if (pdf.cloudinaryId) {
+      await cloudinary.uploader.destroy(pdf.cloudinaryId, {
+        resource_type: "raw",
+      });
+    }
+
     await pdf.deleteOne();
 
     res.status(200).json({ id: req.params.id });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    // It's helpful to log the specific error for debugging
+    console.error("Error deleting PDF:", error);
+    res
+      .status(500)
+      .json({ message: "An error occurred while deleting the PDF." });
   }
 };
 

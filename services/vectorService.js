@@ -1,103 +1,107 @@
 const Pdf = require("../models/pdfModel");
 const pdfParse = require("pdf-parse");
 const axios = require("axios");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
+const { withKeyRotation } = require("./geminiClient");
 
 const processAndEmbedPdf = async (pdfId, fileUrl) => {
-  try {
-    const response = await axios.get(fileUrl, {
-      responseType: "arraybuffer",
-    });
-    const dataBuffer = Buffer.from(response.data);
-    const data = await pdfParse(dataBuffer);
-    const text = data.text;
-    const totalPages = data.numpages;
+  return withKeyRotation(async (genAI) => {
+    const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
 
-    const chunks = chunkTextWithPages(text, totalPages);
+    try {
+      const response = await axios.get(fileUrl, {
+        responseType: "arraybuffer",
+      });
+      const dataBuffer = Buffer.from(response.data);
+      const data = await pdfParse(dataBuffer);
+      const text = data.text;
+      const totalPages = data.numpages;
 
-    const batchSize = 100;
-    const allEmbeddings = [];
+      const chunks = chunkTextWithPages(text, totalPages);
+      const batchSize = 100;
+      const allEmbeddings = [];
 
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      const result = await embeddingModel.batchEmbedContents({
-        requests: batch.map((chunk) => ({
-          content: { parts: [{ text: chunk.text }] },
-        })),
+      for (let i = 0; i < chunks.length; i += batchSize) {
+        const batch = chunks.slice(i, i + batchSize);
+        const result = await embeddingModel.batchEmbedContents({
+          requests: batch.map((chunk) => ({
+            content: { parts: [{ text: chunk.text }] },
+          })),
+        });
+
+        const embeddings = result.embeddings.map((embedding, index) => ({
+          text: batch[index].text,
+          embedding: embedding.values,
+          pageNumber: batch[index].pageNumber,
+        }));
+
+        allEmbeddings.push(...embeddings);
+      }
+
+      await Pdf.findByIdAndUpdate(pdfId, {
+        status: "ready",
+        chunks: allEmbeddings,
+        totalPages: totalPages,
       });
 
-      const embeddings = result.embeddings.map((embedding, index) => ({
-        text: batch[index].text,
-        embedding: embedding.values,
-        pageNumber: batch[index].pageNumber,
-      }));
-
-      allEmbeddings.push(...embeddings);
+      console.log(`PDF ${pdfId} processed and embedded.`);
+    } catch (error) {
+      console.error(`Error processing PDF ${pdfId}:`, error);
+      await Pdf.findByIdAndUpdate(pdfId, { status: "error" });
     }
-
-    await Pdf.findByIdAndUpdate(pdfId, {
-      status: "ready",
-      chunks: allEmbeddings,
-      totalPages: totalPages,
-    });
-
-    console.log(`PDF ${pdfId} processed and embedded.`);
-  } catch (error) {
-    console.error(`Error processing PDF ${pdfId}:`, error);
-    await Pdf.findByIdAndUpdate(pdfId, { status: "error" });
-  }
+  });
 };
 
 const getRelevantContext = async (query, pdfIds, k = 5) => {
-  try {
-    const queryEmbedding = await embeddingModel.embedContent({
-      content: { parts: [{ text: query }] },
-    });
-    const queryVector = queryEmbedding.embedding.values;
+  return withKeyRotation(async (genAI) => {
+    const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
 
-    const pdfs = await Pdf.find({
-      _id: { $in: pdfIds },
-      status: "ready",
-    });
+    try {
+      const queryEmbedding = await embeddingModel.embedContent({
+        content: { parts: [{ text: query }] },
+      });
+      const queryVector = queryEmbedding.embedding.values;
 
-    if (pdfs.length === 0) {
-      return { context: "", citations: [] };
-    }
+      const pdfs = await Pdf.find({
+        _id: { $in: pdfIds },
+        status: "ready",
+      });
 
-    let allChunks = [];
-    pdfs.forEach((pdf) => {
-      pdf.chunks.forEach((chunk) => {
-        allChunks.push({
-          ...chunk.toObject(),
-          pdfId: pdf._id,
-          fileName: pdf.fileName,
+      if (pdfs.length === 0) {
+        return { context: "", citations: [] };
+      }
+
+      let allChunks = [];
+      pdfs.forEach((pdf) => {
+        pdf.chunks.forEach((chunk) => {
+          allChunks.push({
+            ...chunk.toObject(),
+            pdfId: pdf._id,
+            fileName: pdf.fileName,
+          });
         });
       });
-    });
 
-    const scoredChunks = allChunks.map((chunk) => ({
-      ...chunk,
-      similarity: cosineSimilarity(queryVector, chunk.embedding),
-    }));
+      const scoredChunks = allChunks.map((chunk) => ({
+        ...chunk,
+        similarity: cosineSimilarity(queryVector, chunk.embedding),
+      }));
 
-    scoredChunks.sort((a, b) => b.similarity - a.similarity);
-    const topChunks = scoredChunks.slice(0, k);
+      scoredChunks.sort((a, b) => b.similarity - a.similarity);
+      const topChunks = scoredChunks.slice(0, k);
 
-    const context = topChunks.map((c) => c.text).join("\n\n");
-    const citations = topChunks.map((c) => ({
-      pageNumber: c.pageNumber,
-      snippet: c.text.slice(0, 200) + "...",
-      fileName: c.fileName,
-    }));
+      const context = topChunks.map((c) => c.text).join("\n\n");
+      const citations = topChunks.map((c) => ({
+        pageNumber: c.pageNumber,
+        snippet: c.text.slice(0, 200) + "...",
+        fileName: c.fileName,
+      }));
 
-    return { context, citations };
-  } catch (error) {
-    console.error("Error getting relevant context:", error);
-    return { context: "", citations: [] };
-  }
+      return { context, citations };
+    } catch (error) {
+      console.error("Error getting relevant context:", error);
+      return { context: "", citations: [] };
+    }
+  });
 };
 
 const chunkTextWithPages = (text, totalPages, chunkSize = 1000) => {
