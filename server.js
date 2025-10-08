@@ -13,6 +13,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   "https://your-frontend.onrender.com",
   "https://student-revision-app.onrender.com",
+  "https://student-revision-app.netlify.app",
 ];
 
 // CORS configuration
