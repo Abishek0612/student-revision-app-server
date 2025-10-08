@@ -1,23 +1,19 @@
 const express = require("express");
 const router = express.Router();
-const { getPdfs, uploadPdf } = require("../controllers/pdfController");
+const {
+  getPdfs,
+  uploadPdf,
+  deletePdf,
+  seedNCERTPdfs,
+} = require("../controllers/pdfController");
 const { protect } = require("../middleware/authMiddleware");
-const multer = require("multer");
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
-  },
-});
-
-const upload = multer({ storage });
+const { upload } = require("../config/cloudinary");
 
 router
   .route("/")
   .get(protect, getPdfs)
   .post(protect, upload.single("pdf"), uploadPdf);
+router.delete("/:id", protect, deletePdf);
+router.post("/seed-ncert", protect, seedNCERTPdfs);
 
 module.exports = router;

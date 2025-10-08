@@ -1,5 +1,11 @@
 const mongoose = require("mongoose");
 
+const chunkSchema = mongoose.Schema({
+  text: String,
+  embedding: [Number],
+  pageNumber: Number,
+});
+
 const pdfSchema = mongoose.Schema(
   {
     user: {
@@ -11,7 +17,11 @@ const pdfSchema = mongoose.Schema(
       type: String,
       required: true,
     },
-    filePath: {
+    fileUrl: {
+      type: String,
+      required: true,
+    },
+    cloudinaryId: {
       type: String,
       required: true,
     },
@@ -19,6 +29,11 @@ const pdfSchema = mongoose.Schema(
       type: String,
       enum: ["processing", "ready", "error"],
       default: "processing",
+    },
+    chunks: [chunkSchema],
+    totalPages: {
+      type: Number,
+      default: 0,
     },
   },
   {

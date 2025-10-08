@@ -1,55 +1,130 @@
 const Pdf = require("../models/pdfModel");
 const pdfParse = require("pdf-parse");
-const fs = require("fs");
+const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
 
-const processAndEmbedPdf = async (pdfId, filePath) => {
+const processAndEmbedPdf = async (pdfId, fileUrl) => {
   try {
-    const dataBuffer = fs.readFileSync(filePath);
+    const response = await axios.get(fileUrl, {
+      responseType: "arraybuffer",
+    });
+    const dataBuffer = Buffer.from(response.data);
     const data = await pdfParse(dataBuffer);
     const text = data.text;
-    const chunks = chunkText(text);
+    const totalPages = data.numpages;
 
-    const result = await embeddingModel.batchEmbedContents({
-      requests: chunks.map((chunk) => ({ content: chunk })),
+    const chunks = chunkTextWithPages(text, totalPages);
+
+    const batchSize = 100;
+    const allEmbeddings = [];
+
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      const result = await embeddingModel.batchEmbedContents({
+        requests: batch.map((chunk) => ({
+          content: { parts: [{ text: chunk.text }] },
+        })),
+      });
+
+      const embeddings = result.embeddings.map((embedding, index) => ({
+        text: batch[index].text,
+        embedding: embedding.values,
+        pageNumber: batch[index].pageNumber,
+      }));
+
+      allEmbeddings.push(...embeddings);
+    }
+
+    await Pdf.findByIdAndUpdate(pdfId, {
+      status: "ready",
+      chunks: allEmbeddings,
+      totalPages: totalPages,
     });
 
-    const embeddings = result.embeddings.map((embedding, index) => ({
-      text: chunks[index],
-      embedding: embedding.values,
-    }));
-
-    await Pdf.findByIdAndUpdate(pdfId, { status: "ready", chunks: embeddings });
-    console.log(`PDF ${pdfId} processed and embedded using Gemini.`);
+    console.log(`PDF ${pdfId} processed and embedded.`);
   } catch (error) {
     console.error(`Error processing PDF ${pdfId}:`, error);
     await Pdf.findByIdAndUpdate(pdfId, { status: "error" });
   }
 };
 
-const getRelevantContext = async (query, pdfId, k = 3) => {
-  const pdf = await Pdf.findById(pdfId);
-  if (!pdf || pdf.status !== "ready") {
-    throw new Error("PDF not ready for querying");
+const getRelevantContext = async (query, pdfIds, k = 5) => {
+  try {
+    const queryEmbedding = await embeddingModel.embedContent({
+      content: { parts: [{ text: query }] },
+    });
+    const queryVector = queryEmbedding.embedding.values;
+
+    const pdfs = await Pdf.find({
+      _id: { $in: pdfIds },
+      status: "ready",
+    });
+
+    if (pdfs.length === 0) {
+      return { context: "", citations: [] };
+    }
+
+    let allChunks = [];
+    pdfs.forEach((pdf) => {
+      pdf.chunks.forEach((chunk) => {
+        allChunks.push({
+          ...chunk.toObject(),
+          pdfId: pdf._id,
+          fileName: pdf.fileName,
+        });
+      });
+    });
+
+    const scoredChunks = allChunks.map((chunk) => ({
+      ...chunk,
+      similarity: cosineSimilarity(queryVector, chunk.embedding),
+    }));
+
+    scoredChunks.sort((a, b) => b.similarity - a.similarity);
+    const topChunks = scoredChunks.slice(0, k);
+
+    const context = topChunks.map((c) => c.text).join("\n\n");
+    const citations = topChunks.map((c) => ({
+      pageNumber: c.pageNumber,
+      snippet: c.text.slice(0, 200) + "...",
+      fileName: c.fileName,
+    }));
+
+    return { context, citations };
+  } catch (error) {
+    console.error("Error getting relevant context:", error);
+    return { context: "", citations: [] };
   }
-  // This is a simplified search for demonstration.
-  // For production, this should be a real vector similarity search.
-  const randomChunks = pdf.chunks.sort(() => 0.5 - Math.random()).slice(0, k);
-  return randomChunks.map((c) => c.text).join("\n\n");
 };
 
-const chunkText = (text, chunkSize = 1000, overlap = 100) => {
+const chunkTextWithPages = (text, totalPages, chunkSize = 1000) => {
   const chunks = [];
-  let i = 0;
-  while (i < text.length) {
-    const end = i + chunkSize;
-    chunks.push(text.substring(i, end));
-    i += chunkSize - overlap;
+  const avgCharsPerPage = Math.ceil(text.length / totalPages);
+
+  let currentPos = 0;
+  while (currentPos < text.length) {
+    const chunkText = text.slice(currentPos, currentPos + chunkSize);
+    const estimatedPage = Math.ceil(currentPos / avgCharsPerPage) + 1;
+
+    chunks.push({
+      text: chunkText,
+      pageNumber: Math.min(estimatedPage, totalPages),
+    });
+
+    currentPos += chunkSize;
   }
+
   return chunks;
+};
+
+const cosineSimilarity = (vecA, vecB) => {
+  const dotProduct = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
+  const magnitudeA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
+  const magnitudeB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
+  return dotProduct / (magnitudeA * magnitudeB);
 };
 
 module.exports = { processAndEmbedPdf, getRelevantContext };

@@ -21,13 +21,66 @@ const generateQuizQuestions = async (context, count, types) => {
   try {
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    const text = response.text();
+    let text = response.text();
+
+    text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "");
+
     const content = JSON.parse(text);
     return content.questions;
   } catch (error) {
-    console.error("Error generating quiz with Gemini:", error);
-    throw new Error("Google AI API call failed");
+    console.error("Error generating quiz:", error);
+    throw new Error("Failed to generate quiz questions");
   }
 };
 
-module.exports = { generateQuizQuestions };
+const generateChatResponse = async (userMessage, context, chatHistory) => {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+  const historyText = chatHistory
+    .slice(-6)
+    .map(
+      (msg) => `${msg.role === "user" ? "Student" : "Teacher"}: ${msg.content}`
+    )
+    .join("\n");
+
+  const prompt = `You are a helpful teacher assistant for students. Answer the student's question based on the context provided from their coursebooks.
+
+${context ? `Context from coursebooks:\n---\n${context}\n---\n\n` : ""}
+
+Previous conversation:
+${historyText}
+
+Student: ${userMessage}
+
+Teacher:`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    return response.text();
+  } catch (error) {
+    console.error("Error generating chat response:", error);
+    throw new Error("Failed to generate response");
+  }
+};
+
+const generateSearchQuery = async (fileName) => {
+  const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+  const prompt = `Given this PDF filename: "${fileName}", generate a concise search query (max 5 words) to find relevant educational YouTube videos. Only return the search query, nothing else.`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    return response.text().trim();
+  } catch (error) {
+    console.error("Error generating search query:", error);
+    return fileName.replace(".pdf", "");
+  }
+};
+
+module.exports = {
+  generateQuizQuestions,
+  generateChatResponse,
+  generateSearchQuery,
+};
