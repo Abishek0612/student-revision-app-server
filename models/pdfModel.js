@@ -30,6 +30,9 @@ const pdfSchema = mongoose.Schema(
       enum: ["processing", "ready", "error"],
       default: "processing",
     },
+    errorMessage: {
+      type: String,
+    },
     chunks: [chunkSchema],
     totalPages: {
       type: Number,
